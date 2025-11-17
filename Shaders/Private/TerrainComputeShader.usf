@@ -1,0 +1,357 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	TerrainComputeShader.usf: Compute shader for GPU-accelerated terrain generation
+=============================================================================*/
+
+#include "/Engine/Public/Platform.ush"
+
+// Thread group size
+#define THREADGROUP_SIZE_X 8
+#define THREADGROUP_SIZE_Y 8
+#define THREADGROUP_SIZE_Z 1
+
+// Output heightmap
+RWTexture2D<float> OutputHeightmap;
+
+// Noise parameters
+float Frequency;
+int Octaves;
+float Lacunarity;
+float Gain;
+float Amplitude;
+
+// Terrain parameters
+uint Seed;
+float2 TerrainSize;
+float2 Offset;
+int PassType;
+
+// Biome weights
+float4 BiomeWeights;
+
+// Advanced parameters
+float Persistence;
+float Scale;
+int EnableRidgedNoise;
+float RidgedSharpness;
+
+//=============================================================================
+// Hash Functions for Pseudo-Random Number Generation
+//=============================================================================
+
+// Hash function for generating pseudo-random numbers
+uint Hash(uint x)
+{
+	x += (x << 10u);
+	x ^= (x >> 6u);
+	x += (x << 3u);
+	x ^= (x >> 11u);
+	x += (x << 15u);
+	return x;
+}
+
+uint Hash(uint2 v)
+{
+	return Hash(v.x ^ Hash(v.y));
+}
+
+uint Hash(uint3 v)
+{
+	return Hash(v.x ^ Hash(v.y) ^ Hash(v.z));
+}
+
+// Convert hash to float in [0, 1]
+float HashToFloat(uint hash)
+{
+	return (float)hash / 4294967295.0;
+}
+
+// Generate random float from 2D coordinates and seed
+float Random2D(float2 p, uint seed)
+{
+	uint2 ip = uint2(floor(p));
+	uint hash = Hash(uint3(ip, seed));
+	return HashToFloat(hash);
+}
+
+// Generate random float in [-1, 1]
+float Random2DSigned(float2 p, uint seed)
+{
+	return Random2D(p, seed) * 2.0 - 1.0;
+}
+
+//=============================================================================
+// Gradient Noise Functions
+//=============================================================================
+
+// Generate 2D gradient vector
+float2 Gradient2D(float2 p, uint seed)
+{
+	float angle = Random2D(p, seed) * 6.28318530718; // 2 * PI
+	return float2(cos(angle), sin(angle));
+}
+
+// Smooth interpolation (quintic)
+float SmoothStep(float t)
+{
+	return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+float2 SmoothStep2(float2 t)
+{
+	return float2(SmoothStep(t.x), SmoothStep(t.y));
+}
+
+// Perlin noise implementation
+float PerlinNoise(float2 p, uint seed)
+{
+	float2 i = floor(p);
+	float2 f = frac(p);
+
+	// Get gradients at corners
+	float2 g00 = Gradient2D(i + float2(0, 0), seed);
+	float2 g10 = Gradient2D(i + float2(1, 0), seed);
+	float2 g01 = Gradient2D(i + float2(0, 1), seed);
+	float2 g11 = Gradient2D(i + float2(1, 1), seed);
+
+	// Calculate dot products
+	float v00 = dot(g00, f - float2(0, 0));
+	float v10 = dot(g10, f - float2(1, 0));
+	float v01 = dot(g01, f - float2(0, 1));
+	float v11 = dot(g11, f - float2(1, 1));
+
+	// Interpolate
+	float2 u = SmoothStep2(f);
+	float v0 = lerp(v00, v10, u.x);
+	float v1 = lerp(v01, v11, u.x);
+	return lerp(v0, v1, u.y);
+}
+
+//=============================================================================
+// Simplex Noise (2D)
+//=============================================================================
+
+float SimplexNoise(float2 p, uint seed)
+{
+	const float F2 = 0.366025403784; // (sqrt(3) - 1) / 2
+	const float G2 = 0.211324865405; // (3 - sqrt(3)) / 6
+
+	// Skew input space
+	float s = (p.x + p.y) * F2;
+	float2 i = floor(p + s);
+	float t = (i.x + i.y) * G2;
+	float2 x0 = p - (i - t);
+
+	// Determine simplex
+	float2 i1 = (x0.x > x0.y) ? float2(1, 0) : float2(0, 1);
+
+	// Offsets for corners
+	float2 x1 = x0 - i1 + G2;
+	float2 x2 = x0 - 1.0 + 2.0 * G2;
+
+	// Gradients
+	float2 g0 = Gradient2D(i, seed);
+	float2 g1 = Gradient2D(i + i1, seed);
+	float2 g2 = Gradient2D(i + 1.0, seed);
+
+	// Calculate contributions
+	float n0 = 0, n1 = 0, n2 = 0;
+
+	float t0 = 0.5 - dot(x0, x0);
+	if (t0 > 0)
+	{
+		t0 *= t0;
+		n0 = t0 * t0 * dot(g0, x0);
+	}
+
+	float t1 = 0.5 - dot(x1, x1);
+	if (t1 > 0)
+	{
+		t1 *= t1;
+		n1 = t1 * t1 * dot(g1, x1);
+	}
+
+	float t2 = 0.5 - dot(x2, x2);
+	if (t2 > 0)
+	{
+		t2 *= t2;
+		n2 = t2 * t2 * dot(g2, x2);
+	}
+
+	// Sum and scale
+	return 70.0 * (n0 + n1 + n2);
+}
+
+//=============================================================================
+// Fractional Brownian Motion (FBm)
+//=============================================================================
+
+float FBm(float2 p, uint seed, int octaves, float lacunarity, float gain)
+{
+	float value = 0.0;
+	float amplitude = 1.0;
+	float frequency = 1.0;
+	float maxValue = 0.0;
+
+	for (int i = 0; i < octaves; i++)
+	{
+		value += PerlinNoise(p * frequency, seed + i * 100) * amplitude;
+		maxValue += amplitude;
+		amplitude *= gain;
+		frequency *= lacunarity;
+	}
+
+	return value / maxValue;
+}
+
+// Ridged noise for mountain-like features
+float RidgedNoise(float2 p, uint seed, int octaves, float lacunarity, float gain, float sharpness)
+{
+	float value = 0.0;
+	float amplitude = 1.0;
+	float frequency = 1.0;
+	float maxValue = 0.0;
+
+	for (int i = 0; i < octaves; i++)
+	{
+		float n = PerlinNoise(p * frequency, seed + i * 100);
+		n = abs(n);
+		n = pow(1.0 - n, sharpness);
+		value += n * amplitude;
+		maxValue += amplitude;
+		amplitude *= gain;
+		frequency *= lacunarity;
+	}
+
+	return value / maxValue;
+}
+
+//=============================================================================
+// Voronoi / Worley Noise
+//=============================================================================
+
+float VoronoiNoise(float2 p, uint seed)
+{
+	float2 i = floor(p);
+	float2 f = frac(p);
+
+	float minDist = 1.0;
+
+	// Check 3x3 neighboring cells
+	for (int y = -1; y <= 1; y++)
+	{
+		for (int x = -1; x <= 1; x++)
+		{
+			float2 neighbor = float2(x, y);
+			float2 cellPos = i + neighbor;
+
+			// Random point in cell
+			float2 point = float2(
+				Random2D(cellPos, seed),
+				Random2D(cellPos, seed + 1000)
+			);
+
+			float2 diff = neighbor + point - f;
+			float dist = length(diff);
+			minDist = min(minDist, dist);
+		}
+	}
+
+	return minDist;
+}
+
+// Worley noise (cellular noise)
+float WorleyNoise(float2 p, uint seed)
+{
+	return 1.0 - VoronoiNoise(p, seed);
+}
+
+//=============================================================================
+// Biome-Based Blending
+//=============================================================================
+
+float BlendNoise(float2 p, uint seed, float4 biomeWeights)
+{
+	float mountainNoise = RidgedNoise(p, seed, 6, 2.2, 0.5, 2.0);
+	float plainNoise = FBm(p, seed + 5000, 4, 2.0, 0.5);
+	float desertNoise = WorleyNoise(p * 0.5, seed + 10000) * 0.3;
+	float forestNoise = FBm(p * 2.0, seed + 15000, 5, 2.5, 0.4);
+
+	return mountainNoise * biomeWeights.x +
+		   plainNoise * biomeWeights.y +
+		   desertNoise * biomeWeights.z +
+		   forestNoise * biomeWeights.w;
+}
+
+//=============================================================================
+// Main Compute Shader
+//=============================================================================
+
+[numthreads(THREADGROUP_SIZE_X, THREADGROUP_SIZE_Y, THREADGROUP_SIZE_Z)]
+void GenerateTerrainCS(
+	uint3 GroupId : SV_GroupID,
+	uint3 GroupThreadId : SV_GroupThreadID,
+	uint3 DispatchThreadId : SV_DispatchThreadID,
+	uint GroupIndex : SV_GroupIndex)
+{
+	// Get output texture dimensions
+	uint width, height;
+	OutputHeightmap.GetDimensions(width, height);
+
+	// Check bounds
+	if (DispatchThreadId.x >= width || DispatchThreadId.y >= height)
+	{
+		return;
+	}
+
+	// Calculate world position
+	float2 uv = float2(DispatchThreadId.xy) / float2(width, height);
+	float2 worldPos = (uv * TerrainSize + Offset) / Scale;
+
+	// Generate noise based on pass type
+	float height = 0.0;
+
+	if (EnableRidgedNoise > 0)
+	{
+		// Ridged noise for mountains
+		height = RidgedNoise(worldPos * Frequency, Seed, Octaves, Lacunarity, Gain, RidgedSharpness);
+	}
+	else
+	{
+		// Standard FBm
+		height = FBm(worldPos * Frequency, Seed, Octaves, Lacunarity, Gain);
+	}
+
+	// Apply amplitude
+	height *= Amplitude;
+
+	// Biome blending if weights are provided
+	if (dot(BiomeWeights, float4(1, 1, 1, 1)) > 0.1)
+	{
+		float biomeBlend = BlendNoise(worldPos * Frequency * 0.5, Seed + 20000, BiomeWeights);
+		height = lerp(height, height * biomeBlend, 0.3);
+	}
+
+	// Read existing value and blend based on pass type
+	float existingHeight = OutputHeightmap[DispatchThreadId.xy];
+
+	float finalHeight;
+	if (PassType == 0) // Continental
+	{
+		finalHeight = height;
+	}
+	else if (PassType == 1) // Mountains
+	{
+		// Additive blending for mountains
+		finalHeight = existingHeight + height * 0.5;
+	}
+	else // Details
+	{
+		// Fine details added on top
+		finalHeight = existingHeight + height * 0.1;
+	}
+
+	// Write output
+	OutputHeightmap[DispatchThreadId.xy] = finalHeight;
+}

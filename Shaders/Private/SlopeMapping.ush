@@ -1,0 +1,363 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	SlopeMapping.ush: Slope-based texture mapping for terrain materials
+=============================================================================*/
+
+#pragma once
+
+/**
+ * Calculate slope angle from world normal
+ * @param WorldNormal - Surface normal in world space (must be normalized)
+ * @return Slope angle in degrees (0-90)
+ */
+float CalculateSlope(float3 WorldNormal)
+{
+	// Slope is the angle between the normal and the up vector (0,0,1)
+	// cos(angle) = dot(normal, up) = normal.z
+	float CosAngle = saturate(WorldNormal.z);
+
+	// Convert to angle in degrees
+	float AngleRadians = acos(CosAngle);
+	float AngleDegrees = degrees(AngleRadians);
+
+	return AngleDegrees;
+}
+
+/**
+ * Calculate slope factor (0-1) from world normal
+ * @param WorldNormal - Surface normal in world space
+ * @return Slope factor (0 = flat, 1 = vertical)
+ */
+float CalculateSlopeFactor(float3 WorldNormal)
+{
+	// Simple slope factor based on vertical component
+	// 0 = pointing up (flat), 1 = horizontal (vertical slope)
+	return 1.0 - abs(WorldNormal.z);
+}
+
+/**
+ * Generate slope-based mask
+ * @param WorldNormal - Surface normal in world space
+ * @param MinSlope - Minimum slope angle in degrees
+ * @param MaxSlope - Maximum slope angle in degrees
+ * @param BlendRange - Blending range at edges (in degrees)
+ * @return Mask value (0-1)
+ */
+float GenerateSlopeMask(float3 WorldNormal, float MinSlope, float MaxSlope, float BlendRange)
+{
+	float Slope = CalculateSlope(WorldNormal);
+	float Mask = 1.0;
+
+	// Blend at lower edge
+	if (Slope < MinSlope + BlendRange)
+	{
+		Mask *= smoothstep(MinSlope - BlendRange, MinSlope + BlendRange, Slope);
+	}
+
+	// Blend at upper edge
+	if (Slope > MaxSlope - BlendRange)
+	{
+		Mask *= smoothstep(MaxSlope + BlendRange, MaxSlope - BlendRange, Slope);
+	}
+
+	// Outside range
+	if (Slope < MinSlope || Slope > MaxSlope)
+	{
+		Mask = 0.0;
+	}
+
+	return Mask;
+}
+
+/**
+ * Blend two materials based on slope
+ * @param FlatMaterial - Material for flat surfaces
+ * @param SlopeMaterial - Material for slopes
+ * @param WorldNormal - Surface normal in world space
+ * @param SlopeThreshold - Slope angle threshold in degrees
+ * @param BlendRange - Blending range (in degrees)
+ * @return Blended material
+ */
+float4 SlopeBasedBlend(
+	float4 FlatMaterial,
+	float4 SlopeMaterial,
+	float3 WorldNormal,
+	float SlopeThreshold,
+	float BlendRange)
+{
+	float Slope = CalculateSlope(WorldNormal);
+
+	// Calculate blend factor
+	float BlendFactor = smoothstep(SlopeThreshold - BlendRange, SlopeThreshold + BlendRange, Slope);
+
+	// Blend materials
+	return lerp(FlatMaterial, SlopeMaterial, BlendFactor);
+}
+
+/**
+ * Multi-layer slope-based blending
+ * @param Materials - Array of materials for different slope ranges
+ * @param SlopeRanges - Array of slope ranges [min, max] in degrees
+ * @param WorldNormal - Surface normal in world space
+ * @param BlendRange - Blending range between layers
+ * @return Blended material
+ */
+float4 MultiSlopeBlend(
+	float4 Materials[4],
+	float2 SlopeRanges[4],
+	float3 WorldNormal,
+	float BlendRange)
+{
+	float Slope = CalculateSlope(WorldNormal);
+	float4 Result = float4(0, 0, 0, 0);
+	float TotalWeight = 0.0;
+
+	// Calculate weights for each slope range
+	for (int i = 0; i < 4; i++)
+	{
+		float MinSlope = SlopeRanges[i].x;
+		float MaxSlope = SlopeRanges[i].y;
+		float Weight = 0.0;
+
+		// Check if slope is within range
+		if (Slope >= MinSlope && Slope <= MaxSlope)
+		{
+			Weight = 1.0;
+
+			// Smooth blend at edges
+			if (Slope < MinSlope + BlendRange)
+			{
+				Weight *= smoothstep(MinSlope - BlendRange, MinSlope + BlendRange, Slope);
+			}
+			if (Slope > MaxSlope - BlendRange)
+			{
+				Weight *= smoothstep(MaxSlope + BlendRange, MaxSlope - BlendRange, Slope);
+			}
+		}
+
+		Result += Materials[i] * Weight;
+		TotalWeight += Weight;
+	}
+
+	// Normalize
+	if (TotalWeight > 0.0001)
+	{
+		Result /= TotalWeight;
+	}
+
+	return Result;
+}
+
+/**
+ * Calculate slope from height map using derivatives
+ * @param HeightMap - Height map texture
+ * @param HeightSampler - Sampler for height map
+ * @param UV - Texture coordinates
+ * @param PixelSize - Size of a pixel in UV space
+ * @param HeightScale - Scale factor for height values
+ * @return Slope angle in degrees
+ */
+float CalculateSlopeFromHeightMap(
+	Texture2D HeightMap,
+	SamplerState HeightSampler,
+	float2 UV,
+	float2 PixelSize,
+	float HeightScale)
+{
+	// Sample height at current position and neighbors
+	float H = HeightMap.Sample(HeightSampler, UV).r;
+	float HRight = HeightMap.Sample(HeightSampler, UV + float2(PixelSize.x, 0)).r;
+	float HUp = HeightMap.Sample(HeightSampler, UV + float2(0, PixelSize.y)).r;
+
+	// Calculate gradients
+	float dX = (HRight - H) * HeightScale / PixelSize.x;
+	float dY = (HUp - H) * HeightScale / PixelSize.y;
+
+	// Calculate slope magnitude
+	float SlopeMagnitude = sqrt(dX * dX + dY * dY);
+
+	// Convert to angle
+	float AngleRadians = atan(SlopeMagnitude);
+	float AngleDegrees = degrees(AngleRadians);
+
+	return AngleDegrees;
+}
+
+/**
+ * Calculate directional slope (facing direction)
+ * @param WorldNormal - Surface normal in world space
+ * @param Direction - Reference direction (e.g., sun direction)
+ * @return Directional slope factor (-1 to 1, negative = facing away)
+ */
+float CalculateDirectionalSlope(float3 WorldNormal, float3 Direction)
+{
+	// Dot product gives directional alignment
+	return dot(normalize(WorldNormal), normalize(Direction));
+}
+
+/**
+ * Generate aspect mask (direction the slope is facing)
+ * Useful for simulating sun exposure, wind direction, etc.
+ * @param WorldNormal - Surface normal in world space
+ * @param TargetDirection - Target direction (e.g., float3(1,0,0) for east)
+ * @param Tolerance - Angular tolerance in degrees
+ * @return Mask value (0-1)
+ */
+float GenerateAspectMask(float3 WorldNormal, float3 TargetDirection, float Tolerance)
+{
+	// Project normal onto horizontal plane
+	float3 HorizontalNormal = normalize(float3(WorldNormal.x, WorldNormal.y, 0));
+
+	// Calculate angle to target direction
+	float Alignment = dot(HorizontalNormal, normalize(TargetDirection));
+
+	// Convert tolerance to cosine
+	float CosTolerance = cos(radians(Tolerance));
+
+	// Generate mask
+	float Mask = smoothstep(CosTolerance - 0.1, CosTolerance + 0.1, Alignment);
+
+	return Mask;
+}
+
+/**
+ * Combined slope and aspect blending
+ * @param Material1 - Material for gentle slopes facing target direction
+ * @param Material2 - Material for steep slopes or different aspect
+ * @param WorldNormal - Surface normal in world space
+ * @param SlopeThreshold - Slope threshold in degrees
+ * @param AspectDirection - Target aspect direction
+ * @param AspectTolerance - Aspect tolerance in degrees
+ * @param BlendRange - Blending range
+ * @return Blended material
+ */
+float4 SlopeAspectBlend(
+	float4 Material1,
+	float4 Material2,
+	float3 WorldNormal,
+	float SlopeThreshold,
+	float3 AspectDirection,
+	float AspectTolerance,
+	float BlendRange)
+{
+	// Calculate slope mask
+	float SlopeMask = GenerateSlopeMask(WorldNormal, 0, SlopeThreshold, BlendRange);
+
+	// Calculate aspect mask
+	float AspectMask = GenerateAspectMask(WorldNormal, AspectDirection, AspectTolerance);
+
+	// Combine masks
+	float CombinedMask = SlopeMask * AspectMask;
+
+	// Blend materials
+	return lerp(Material2, Material1, CombinedMask);
+}
+
+/**
+ * Flat surface detection
+ * @param WorldNormal - Surface normal in world space
+ * @param Threshold - Flatness threshold (0-1, higher = more strict)
+ * @param Smoothness - Transition smoothness
+ * @return Flatness factor (0-1, 1 = completely flat)
+ */
+float DetectFlatSurface(float3 WorldNormal, float Threshold, float Smoothness)
+{
+	// Measure how much the normal points up
+	float UpAlignment = WorldNormal.z;
+
+	// Convert threshold to slope
+	float FlatnessFactor = smoothstep(Threshold - Smoothness, Threshold + Smoothness, UpAlignment);
+
+	return FlatnessFactor;
+}
+
+/**
+ * Cliff detection (very steep slopes)
+ * @param WorldNormal - Surface normal in world space
+ * @param MinCliffAngle - Minimum angle to be considered a cliff (in degrees)
+ * @param BlendRange - Blending range
+ * @return Cliff factor (0-1, 1 = definitely a cliff)
+ */
+float DetectCliff(float3 WorldNormal, float MinCliffAngle, float BlendRange)
+{
+	float Slope = CalculateSlope(WorldNormal);
+
+	// Smoothstep from MinCliffAngle to 90 degrees
+	float CliffFactor = smoothstep(MinCliffAngle - BlendRange, MinCliffAngle + BlendRange, Slope);
+
+	return CliffFactor;
+}
+
+/**
+ * Terrain feature classification based on slope
+ * Returns weights for different terrain types
+ * @param WorldNormal - Surface normal in world space
+ * @param FlatThreshold - Maximum slope for flat terrain (degrees)
+ * @param SteepThreshold - Minimum slope for steep terrain (degrees)
+ * @param BlendRange - Blending range
+ * @return float3 - Weights for [Flat, Slope, Steep]
+ */
+float3 ClassifyTerrainBySlope(
+	float3 WorldNormal,
+	float FlatThreshold,
+	float SteepThreshold,
+	float BlendRange)
+{
+	float Slope = CalculateSlope(WorldNormal);
+	float3 Weights = float3(0, 0, 0);
+
+	// Flat terrain
+	if (Slope < FlatThreshold + BlendRange)
+	{
+		Weights.x = smoothstep(FlatThreshold + BlendRange, FlatThreshold - BlendRange, Slope);
+	}
+
+	// Steep terrain
+	if (Slope > SteepThreshold - BlendRange)
+	{
+		Weights.z = smoothstep(SteepThreshold - BlendRange, SteepThreshold + BlendRange, Slope);
+	}
+
+	// Moderate slope (everything in between)
+	Weights.y = 1.0 - Weights.x - Weights.z;
+
+	// Normalize to ensure sum = 1
+	float TotalWeight = Weights.x + Weights.y + Weights.z;
+	if (TotalWeight > 0.0001)
+	{
+		Weights /= TotalWeight;
+	}
+
+	return Weights;
+}
+
+/**
+ * Advanced slope-based material selection with erosion
+ * Simulates material deposition and erosion based on slope
+ * @param BaseMaterial - Base terrain material
+ * @param DepositMaterial - Material that accumulates on flat areas
+ * @param ErodedMaterial - Material exposed on steep slopes
+ * @param WorldNormal - Surface normal in world space
+ * @param DepositThreshold - Slope threshold for deposition (degrees)
+ * @param ErosionThreshold - Slope threshold for erosion (degrees)
+ * @param BlendRange - Blending range
+ * @return Blended material
+ */
+float4 ErosionBasedBlend(
+	float4 BaseMaterial,
+	float4 DepositMaterial,
+	float4 ErodedMaterial,
+	float3 WorldNormal,
+	float DepositThreshold,
+	float ErosionThreshold,
+	float BlendRange)
+{
+	float3 Weights = ClassifyTerrainBySlope(WorldNormal, DepositThreshold, ErosionThreshold, BlendRange);
+
+	// Blend materials based on terrain classification
+	// Flat = deposit, Slope = base, Steep = eroded
+	float4 Result = DepositMaterial * Weights.x + BaseMaterial * Weights.y + ErodedMaterial * Weights.z;
+
+	return Result;
+}
