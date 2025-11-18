@@ -9,19 +9,31 @@ public class ProceduralMapEditor : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		// Essential dependencies only
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
 			"CoreUObject",
 			"Engine",
-			"InputCore",
-			"ProceduralMap",
 			"UnrealEd",
-			"EditorFramework",
+			"ProceduralMap"
+		});
+
+		PrivateDependencyModuleNames.AddRange(new string[]
+		{
 			"Slate",
 			"SlateCore",
+			"InputCore",
 			"PropertyEditor",
-			"EditorStyle",
+			"EditorStyle"
+		});
+
+		// Optional advanced dependencies
+		// Uncomment these as needed once the project compiles successfully
+		/*
+		PublicDependencyModuleNames.AddRange(new string[]
+		{
+			"EditorFramework",
 			"EditorWidgets",
 			"AssetTools",
 			"ContentBrowser",
@@ -51,7 +63,6 @@ public class ProceduralMapEditor : ModuleRules
 			"MainFrame"
 		});
 
-		// Editor-only module
 		if (Target.bBuildEditor)
 		{
 			PrivateDependencyModuleNames.AddRange(new string[]
@@ -60,5 +71,6 @@ public class ProceduralMapEditor : ModuleRules
 				"ToolWidgets"
 			});
 		}
+		*/
 	}
 }

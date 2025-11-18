@@ -9,16 +9,28 @@ public class ProceduralMap : ModuleRules
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 
+		// Core essential dependencies
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core",
 			"CoreUObject",
 			"Engine",
 			"InputCore",
-			"ProceduralMeshComponent",
+			"ProceduralMeshComponent"
+		});
+
+		PrivateDependencyModuleNames.AddRange(new string[]
+		{
 			"RenderCore",
 			"Renderer",
-			"RHI",
+			"RHI"
+		});
+
+		// Optional advanced features
+		// Uncomment these as needed once the project compiles successfully
+		/*
+		PublicDependencyModuleNames.AddRange(new string[]
+		{
 			"Projects",
 			"Landscape",
 			"Foliage",
@@ -33,6 +45,7 @@ public class ProceduralMap : ModuleRules
 			"Slate",
 			"SlateCore"
 		});
+		*/
 
 		// PCG Framework (UE5) - Optional
 		// Uncomment if you have UE 5.4+ with PCG enabled
