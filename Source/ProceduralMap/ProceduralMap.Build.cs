@@ -34,11 +34,12 @@ public class ProceduralMap : ModuleRules
 			"SlateCore"
 		});
 
-		// PCG Framework (UE5)
-		if (Target.Version.MajorVersion >= 5)
-		{
-			PublicDependencyModuleNames.Add("PCG");
-		}
+		// PCG Framework (UE5) - Optional
+		// Uncomment if you have UE 5.4+ with PCG enabled
+		// if (Target.Version.MajorVersion >= 5)
+		// {
+		// 	PublicDependencyModuleNames.Add("PCG");
+		// }
 
 		// Enable multi-threading
 		bEnableExceptions = false;

@@ -1,0 +1,39 @@
+🔔 NOTE IMPORTANTE - ERREUR DE COMPILATION
+==========================================
+
+Si vous obtenez l'erreur:
+"ProceduralMap could not be compiled. Try rebuilding from source manually."
+
+CAUSE PROBABLE:
+Le module PCG (Procedural Content Generation) n'est pas disponible dans votre version d'Unreal Engine.
+
+✅ SOLUTION APPLIQUÉE:
+J'ai modifié 2 fichiers pour rendre PCG optionnel:
+
+1. ProceduralMap.uproject
+   - Retiré la dépendance PCG des plugins
+
+2. ProceduralMap.Build.cs  
+   - Commenté l'ajout du module PCG
+
+🎯 RÉSULTAT:
+Le projet devrait compiler MAINTENANT sans PCG.
+
+📝 ÉTAPES SUIVANTES:
+1. Ouvrir ProceduralMap.uproject
+2. Accepter la recompilation
+3. Attendre 5-15 minutes
+4. Le projet devrait s'ouvrir !
+
+⚠️ LIMITATIONS SANS PCG:
+- Pas de support PCG Framework natif UE5
+- Toutes les autres fonctionnalités fonctionnent (terrain, biomes, erosion, etc.)
+
+✨ POUR RÉACTIVER PCG (si vous avez UE 5.4+):
+1. Décommenter les lignes dans ProceduralMap.Build.cs (lignes 37-41)
+2. Ajouter {"Name": "PCG", "Enabled": true} dans .uproject
+3. Recompiler
+
+==========================================
+Le système est maintenant prêt à compiler !
+==========================================
