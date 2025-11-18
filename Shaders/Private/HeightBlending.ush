@@ -1,0 +1,286 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	HeightBlending.ush: Height-based texture blending for terrain materials
+=============================================================================*/
+
+#pragma once
+
+/**
+ * Simple height-based blend between two layers
+ * @param Layer1 - First layer color/value
+ * @param Height1 - First layer height (0-1)
+ * @param Layer2 - Second layer color/value
+ * @param Height2 - Second layer height (0-1)
+ * @param BlendStrength - Strength of height-based blending (0 = no effect, 1 = full effect)
+ * @return Blended result
+ */
+float4 HeightBlend2(float4 Layer1, float Height1, float4 Layer2, float Height2, float BlendStrength)
+{
+	// Calculate base blend factor (0.5 = equal)
+	float BaseFactor = 0.5;
+
+	// Adjust blend based on height difference
+	float HeightDiff = (Height1 - Height2) * BlendStrength;
+	float BlendFactor = saturate(BaseFactor + HeightDiff);
+
+	// Blend layers
+	return lerp(Layer2, Layer1, BlendFactor);
+}
+
+/**
+ * Height-based blend between three layers
+ * @param Layer1 - First layer color/value
+ * @param Height1 - First layer height
+ * @param Layer2 - Second layer color/value
+ * @param Height2 - Second layer height
+ * @param Layer3 - Third layer color/value
+ * @param Height3 - Third layer height
+ * @param BlendStrength - Strength of height-based blending
+ * @return Blended result
+ */
+float4 HeightBlend3(
+	float4 Layer1, float Height1,
+	float4 Layer2, float Height2,
+	float4 Layer3, float Height3,
+	float BlendStrength)
+{
+	// Boost each layer weight by its height
+	float Weight1 = 1.0 + Height1 * BlendStrength;
+	float Weight2 = 1.0 + Height2 * BlendStrength;
+	float Weight3 = 1.0 + Height3 * BlendStrength;
+
+	// Normalize weights
+	float TotalWeight = Weight1 + Weight2 + Weight3;
+	Weight1 /= TotalWeight;
+	Weight2 /= TotalWeight;
+	Weight3 /= TotalWeight;
+
+	// Blend layers
+	return Layer1 * Weight1 + Layer2 * Weight2 + Layer3 * Weight3;
+}
+
+/**
+ * Height-based blend between four layers
+ * @param Layer1-4 - Layer colors/values
+ * @param Height1-4 - Layer heights
+ * @param BlendStrength - Strength of height-based blending
+ * @return Blended result
+ */
+float4 HeightBlend4(
+	float4 Layer1, float Height1,
+	float4 Layer2, float Height2,
+	float4 Layer3, float Height3,
+	float4 Layer4, float Height4,
+	float BlendStrength)
+{
+	// Boost each layer weight by its height
+	float Weight1 = 1.0 + Height1 * BlendStrength;
+	float Weight2 = 1.0 + Height2 * BlendStrength;
+	float Weight3 = 1.0 + Height3 * BlendStrength;
+	float Weight4 = 1.0 + Height4 * BlendStrength;
+
+	// Normalize weights
+	float TotalWeight = Weight1 + Weight2 + Weight3 + Weight4;
+	Weight1 /= TotalWeight;
+	Weight2 /= TotalWeight;
+	Weight3 /= TotalWeight;
+	Weight4 /= TotalWeight;
+
+	// Blend layers
+	return Layer1 * Weight1 + Layer2 * Weight2 + Layer3 * Weight3 + Layer4 * Weight4;
+}
+
+/**
+ * Advanced height-based blending with splat map weights
+ * Combines pre-existing weights (from splat map) with height information
+ * @param Layer1-4 - Layer colors/values
+ * @param Height1-4 - Layer heights
+ * @param Weight1-4 - Base weights from splat map (0-1)
+ * @param BlendStrength - Strength of height-based blending
+ * @return Blended result
+ */
+float4 HeightBlendWithWeights4(
+	float4 Layer1, float Height1, float Weight1,
+	float4 Layer2, float Height2, float Weight2,
+	float4 Layer3, float Height3, float Weight3,
+	float4 Layer4, float Height4, float Weight4,
+	float BlendStrength)
+{
+	// Only apply height blending where base weight is non-zero
+	float AdjWeight1 = Weight1 * (1.0 + Height1 * BlendStrength);
+	float AdjWeight2 = Weight2 * (1.0 + Height2 * BlendStrength);
+	float AdjWeight3 = Weight3 * (1.0 + Height3 * BlendStrength);
+	float AdjWeight4 = Weight4 * (1.0 + Height4 * BlendStrength);
+
+	// Normalize weights
+	float TotalWeight = AdjWeight1 + AdjWeight2 + AdjWeight3 + AdjWeight4;
+	if (TotalWeight > 0.0001)
+	{
+		AdjWeight1 /= TotalWeight;
+		AdjWeight2 /= TotalWeight;
+		AdjWeight3 /= TotalWeight;
+		AdjWeight4 /= TotalWeight;
+	}
+
+	// Blend layers
+	return Layer1 * AdjWeight1 + Layer2 * AdjWeight2 + Layer3 * AdjWeight3 + Layer4 * AdjWeight4;
+}
+
+/**
+ * Sharp height-based blending (like geological layers)
+ * Creates harder transitions based on height differences
+ * @param Layer1 - First layer color/value
+ * @param Height1 - First layer height
+ * @param Layer2 - Second layer color/value
+ * @param Height2 - Second layer height
+ * @param Sharpness - Transition sharpness (higher = sharper)
+ * @return Blended result
+ */
+float4 SharpHeightBlend2(float4 Layer1, float Height1, float4 Layer2, float Height2, float Sharpness)
+{
+	// Calculate height difference
+	float HeightDiff = Height1 - Height2;
+
+	// Apply power function for sharp transition
+	float BlendFactor = saturate(0.5 + HeightDiff * Sharpness);
+	BlendFactor = pow(BlendFactor, 2.0);
+
+	// Blend layers
+	return lerp(Layer2, Layer1, BlendFactor);
+}
+
+/**
+ * Smooth height-based blending with falloff
+ * Creates natural-looking transitions
+ * @param Layer1 - First layer color/value
+ * @param Height1 - First layer height
+ * @param Layer2 - Second layer color/value
+ * @param Height2 - Second layer height
+ * @param BlendRange - Range of blending (0-1)
+ * @return Blended result
+ */
+float4 SmoothHeightBlend2(float4 Layer1, float Height1, float4 Layer2, float Height2, float BlendRange)
+{
+	// Calculate height difference
+	float HeightDiff = Height1 - Height2;
+
+	// Smooth blend factor with smoothstep
+	float BlendFactor = smoothstep(-BlendRange, BlendRange, HeightDiff);
+
+	// Blend layers
+	return lerp(Layer2, Layer1, BlendFactor);
+}
+
+/**
+ * Height-based mask generation
+ * Generates a mask based on height values for selective blending
+ * @param Height - Height value (0-1)
+ * @param MinHeight - Minimum height threshold
+ * @param MaxHeight - Maximum height threshold
+ * @param BlendRange - Smoothing range at edges
+ * @return Mask value (0-1)
+ */
+float GenerateHeightMask(float Height, float MinHeight, float MaxHeight, float BlendRange)
+{
+	float Mask = 1.0;
+
+	// Blend at lower edge
+	if (Height < MinHeight + BlendRange)
+	{
+		Mask *= smoothstep(MinHeight - BlendRange, MinHeight + BlendRange, Height);
+	}
+
+	// Blend at upper edge
+	if (Height > MaxHeight - BlendRange)
+	{
+		Mask *= smoothstep(MaxHeight + BlendRange, MaxHeight - BlendRange, Height);
+	}
+
+	// Outside range
+	if (Height < MinHeight || Height > MaxHeight)
+	{
+		Mask = 0.0;
+	}
+
+	return Mask;
+}
+
+/**
+ * Normalize height-based weights
+ * Ensures weights sum to 1.0 while preserving height-based influence
+ * @param Weights - Array of weights [Weight1, Weight2, Weight3, Weight4]
+ * @param Heights - Array of heights [Height1, Height2, Height3, Height4]
+ * @param BlendStrength - Strength of height influence
+ * @return float4 - Normalized weights
+ */
+float4 NormalizeHeightWeights(float4 Weights, float4 Heights, float BlendStrength)
+{
+	// Boost weights by height
+	float4 AdjustedWeights = Weights * (1.0 + Heights * BlendStrength);
+
+	// Normalize
+	float TotalWeight = dot(AdjustedWeights, float4(1, 1, 1, 1));
+	if (TotalWeight > 0.0001)
+	{
+		AdjustedWeights /= TotalWeight;
+	}
+
+	return AdjustedWeights;
+}
+
+/**
+ * Multi-layer height blending with variable layer count
+ * Supports up to 8 layers packed in two float4s
+ * @param Colors - Packed layer colors [Layer1.rgba, Layer2.rgba, ...]
+ * @param Heights - Layer heights packed in float4s
+ * @param Weights - Base weights packed in float4s
+ * @param NumLayers - Number of active layers (1-8)
+ * @param BlendStrength - Strength of height-based blending
+ * @return Blended color
+ */
+float4 MultiLayerHeightBlend(
+	float4 Colors[8],
+	float Heights[8],
+	float Weights[8],
+	int NumLayers,
+	float BlendStrength)
+{
+	float4 Result = float4(0, 0, 0, 0);
+	float TotalWeight = 0.0;
+
+	// Accumulate weighted colors
+	for (int i = 0; i < NumLayers; i++)
+	{
+		float AdjustedWeight = Weights[i] * (1.0 + Heights[i] * BlendStrength);
+		Result += Colors[i] * AdjustedWeight;
+		TotalWeight += AdjustedWeight;
+	}
+
+	// Normalize
+	if (TotalWeight > 0.0001)
+	{
+		Result /= TotalWeight;
+	}
+
+	return Result;
+}
+
+/**
+ * Height-based detail blending
+ * Blends detail texture based on height variation
+ * @param BaseColor - Base layer color
+ * @param DetailColor - Detail layer color
+ * @param HeightVariation - Local height variation (0-1)
+ * @param Threshold - Threshold for detail application
+ * @param Smoothness - Smoothness of transition
+ * @return Blended color
+ */
+float4 DetailHeightBlend(float4 BaseColor, float4 DetailColor, float HeightVariation, float Threshold, float Smoothness)
+{
+	// Calculate blend factor based on height variation
+	float BlendFactor = smoothstep(Threshold - Smoothness, Threshold + Smoothness, HeightVariation);
+
+	// Blend colors
+	return lerp(BaseColor, DetailColor, BlendFactor);
+}

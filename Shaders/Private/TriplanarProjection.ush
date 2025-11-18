@@ -1,0 +1,256 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	TriplanarProjection.ush: Triplanar projection mapping for terrain textures
+=============================================================================*/
+
+#pragma once
+
+/**
+ * Calculate triplanar blend weights from world normal
+ * @param WorldNormal - Surface normal in world space
+ * @param BlendSharpness - Sharpness of the blend (higher = sharper transitions)
+ * @return float3 - Blend weights for X, Y, Z axes
+ */
+float3 CalculateTriplanarBlendWeights(float3 WorldNormal, float BlendSharpness)
+{
+	// Take absolute value of normal
+	float3 BlendWeights = abs(WorldNormal);
+
+	// Apply power function for sharpness
+	BlendWeights = pow(BlendWeights, BlendSharpness);
+
+	// Normalize so weights sum to 1.0
+	float TotalWeight = BlendWeights.x + BlendWeights.y + BlendWeights.z;
+	BlendWeights /= max(TotalWeight, 0.0001);
+
+	return BlendWeights;
+}
+
+/**
+ * Get UV coordinates for triplanar X axis projection
+ * @param WorldPosition - Position in world space
+ * @param TilingScale - Texture tiling scale
+ * @return float2 - UV coordinates
+ */
+float2 GetTriplanarUV_X(float3 WorldPosition, float TilingScale)
+{
+	// X axis uses Y and Z coordinates
+	return WorldPosition.yz * TilingScale;
+}
+
+/**
+ * Get UV coordinates for triplanar Y axis projection
+ * @param WorldPosition - Position in world space
+ * @param TilingScale - Texture tiling scale
+ * @return float2 - UV coordinates
+ */
+float2 GetTriplanarUV_Y(float3 WorldPosition, float TilingScale)
+{
+	// Y axis uses X and Z coordinates
+	return WorldPosition.xz * TilingScale;
+}
+
+/**
+ * Get UV coordinates for triplanar Z axis projection
+ * @param WorldPosition - Position in world space
+ * @param TilingScale - Texture tiling scale
+ * @return float2 - UV coordinates
+ */
+float2 GetTriplanarUV_Z(float3 WorldPosition, float TilingScale)
+{
+	// Z axis uses X and Y coordinates
+	return WorldPosition.xy * TilingScale;
+}
+
+/**
+ * Sample texture with triplanar projection
+ * @param Texture - Texture to sample
+ * @param TextureSampler - Texture sampler
+ * @param WorldPosition - Position in world space
+ * @param WorldNormal - Normal in world space
+ * @param TilingScale - Texture tiling scale
+ * @param BlendSharpness - Blend sharpness
+ * @return float4 - Sampled and blended color
+ */
+float4 TriplanarSample(Texture2D Texture, SamplerState TextureSampler, float3 WorldPosition, float3 WorldNormal, float TilingScale, float BlendSharpness)
+{
+	// Calculate blend weights
+	float3 BlendWeights = CalculateTriplanarBlendWeights(WorldNormal, BlendSharpness);
+
+	// Sample texture from all three axes
+	float4 SampleX = Texture.Sample(TextureSampler, GetTriplanarUV_X(WorldPosition, TilingScale));
+	float4 SampleY = Texture.Sample(TextureSampler, GetTriplanarUV_Y(WorldPosition, TilingScale));
+	float4 SampleZ = Texture.Sample(TextureSampler, GetTriplanarUV_Z(WorldPosition, TilingScale));
+
+	// Blend samples using weights
+	float4 Result = SampleX * BlendWeights.x + SampleY * BlendWeights.y + SampleZ * BlendWeights.z;
+
+	return Result;
+}
+
+/**
+ * Sample normal map with triplanar projection
+ * Properly handles normal map transformation for each projection axis
+ * @param NormalMap - Normal map texture
+ * @param NormalSampler - Normal map sampler
+ * @param WorldPosition - Position in world space
+ * @param WorldNormal - Surface normal in world space
+ * @param TilingScale - Texture tiling scale
+ * @param BlendSharpness - Blend sharpness
+ * @return float3 - World-space normal
+ */
+float3 TriplanarSampleNormal(Texture2D NormalMap, SamplerState NormalSampler, float3 WorldPosition, float3 WorldNormal, float TilingScale, float BlendSharpness)
+{
+	// Calculate blend weights
+	float3 BlendWeights = CalculateTriplanarBlendWeights(WorldNormal, BlendSharpness);
+
+	// Sample normal maps from all three axes
+	float3 NormalX = NormalMap.Sample(NormalSampler, GetTriplanarUV_X(WorldPosition, TilingScale)).xyz * 2.0 - 1.0;
+	float3 NormalY = NormalMap.Sample(NormalSampler, GetTriplanarUV_Y(WorldPosition, TilingScale)).xyz * 2.0 - 1.0;
+	float3 NormalZ = NormalMap.Sample(NormalSampler, GetTriplanarUV_Z(WorldPosition, TilingScale)).xyz * 2.0 - 1.0;
+
+	// Transform normals from tangent space to world space for each projection
+	// X projection: tangent = (0,1,0), bitangent = (0,0,1), normal = (1,0,0) or (-1,0,0)
+	float3 WorldNormalX = float3(
+		NormalX.z * sign(WorldNormal.x),
+		NormalX.x,
+		NormalX.y
+	);
+
+	// Y projection: tangent = (1,0,0), bitangent = (0,0,1), normal = (0,1,0) or (0,-1,0)
+	float3 WorldNormalY = float3(
+		NormalY.x,
+		NormalY.z * sign(WorldNormal.y),
+		NormalY.y
+	);
+
+	// Z projection: tangent = (1,0,0), bitangent = (0,1,0), normal = (0,0,1) or (0,0,-1)
+	float3 WorldNormalZ = float3(
+		NormalZ.x,
+		NormalZ.y,
+		NormalZ.z * sign(WorldNormal.z)
+	);
+
+	// Blend normals using weights
+	float3 BlendedNormal = WorldNormalX * BlendWeights.x + WorldNormalY * BlendWeights.y + WorldNormalZ * BlendWeights.z;
+
+	// Normalize result
+	BlendedNormal = normalize(BlendedNormal);
+
+	return BlendedNormal;
+}
+
+/**
+ * Advanced triplanar sampling with per-axis offset and rotation
+ * @param Texture - Texture to sample
+ * @param TextureSampler - Texture sampler
+ * @param WorldPosition - Position in world space
+ * @param WorldNormal - Normal in world space
+ * @param TilingScale - Texture tiling scale
+ * @param BlendSharpness - Blend sharpness
+ * @param OffsetX - Offset for X projection (YZ plane)
+ * @param OffsetY - Offset for Y projection (XZ plane)
+ * @param OffsetZ - Offset for Z projection (XY plane)
+ * @param RotationX - Rotation in radians for X projection
+ * @param RotationY - Rotation in radians for Y projection
+ * @param RotationZ - Rotation in radians for Z projection
+ * @return float4 - Sampled and blended color
+ */
+float4 TriplanarSampleAdvanced(
+	Texture2D Texture,
+	SamplerState TextureSampler,
+	float3 WorldPosition,
+	float3 WorldNormal,
+	float TilingScale,
+	float BlendSharpness,
+	float2 OffsetX,
+	float2 OffsetY,
+	float2 OffsetZ,
+	float RotationX,
+	float RotationY,
+	float RotationZ)
+{
+	// Calculate blend weights
+	float3 BlendWeights = CalculateTriplanarBlendWeights(WorldNormal, BlendSharpness);
+
+	// Get base UVs
+	float2 UV_X = GetTriplanarUV_X(WorldPosition, TilingScale);
+	float2 UV_Y = GetTriplanarUV_Y(WorldPosition, TilingScale);
+	float2 UV_Z = GetTriplanarUV_Z(WorldPosition, TilingScale);
+
+	// Apply rotations
+	if (abs(RotationX) > 0.001)
+	{
+		float cosX = cos(RotationX);
+		float sinX = sin(RotationX);
+		UV_X = float2(
+			UV_X.x * cosX - UV_X.y * sinX,
+			UV_X.x * sinX + UV_X.y * cosX
+		);
+	}
+
+	if (abs(RotationY) > 0.001)
+	{
+		float cosY = cos(RotationY);
+		float sinY = sin(RotationY);
+		UV_Y = float2(
+			UV_Y.x * cosY - UV_Y.y * sinY,
+			UV_Y.x * sinY + UV_Y.y * cosY
+		);
+	}
+
+	if (abs(RotationZ) > 0.001)
+	{
+		float cosZ = cos(RotationZ);
+		float sinZ = sin(RotationZ);
+		UV_Z = float2(
+			UV_Z.x * cosZ - UV_Z.y * sinZ,
+			UV_Z.x * sinZ + UV_Z.y * cosZ
+		);
+	}
+
+	// Apply offsets
+	UV_X += OffsetX;
+	UV_Y += OffsetY;
+	UV_Z += OffsetZ;
+
+	// Sample texture from all three axes
+	float4 SampleX = Texture.Sample(TextureSampler, UV_X);
+	float4 SampleY = Texture.Sample(TextureSampler, UV_Y);
+	float4 SampleZ = Texture.Sample(TextureSampler, UV_Z);
+
+	// Blend samples using weights
+	float4 Result = SampleX * BlendWeights.x + SampleY * BlendWeights.y + SampleZ * BlendWeights.z;
+
+	return Result;
+}
+
+/**
+ * Derivative-based triplanar blend weights
+ * Reduces texture swimming artifacts
+ * @param WorldNormal - Surface normal in world space
+ * @param ddx - Screen-space derivative in X
+ * @param ddy - Screen-space derivative in Y
+ * @param BlendSharpness - Blend sharpness
+ * @return float3 - Enhanced blend weights
+ */
+float3 CalculateDerivativeBlendWeights(float3 WorldNormal, float3 ddx, float3 ddy, float BlendSharpness)
+{
+	// Combine normal with derivative information
+	float3 AbsNormal = abs(WorldNormal);
+	float3 Absddx = abs(ddx);
+	float3 Absddy = abs(ddy);
+
+	// Weight based on both normal and surface variation
+	float3 BlendWeights = AbsNormal + (Absddx + Absddy) * 0.1;
+
+	// Apply power function for sharpness
+	BlendWeights = pow(BlendWeights, BlendSharpness);
+
+	// Normalize
+	float TotalWeight = BlendWeights.x + BlendWeights.y + BlendWeights.z;
+	BlendWeights /= max(TotalWeight, 0.0001);
+
+	return BlendWeights;
+}
